@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use pgx::bgworkers::*;
 use pgx::prelude::*;
+use pgx::{FromDatum, IntoDatum, PgOid};
 
 pub const UPTIME_QUERY: &str =
     "SELECT FLOOR(EXTRACT(EPOCH FROM now() - pg_postmaster_start_time))::bigint
@@ -28,16 +29,34 @@ fn query_exec(query: &str) -> Option<i64> {
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 mod tests {
-    use crate::metrics::query;
+    use crate::metrics::query::{handle_query, query_exec, UPTIME_QUERY};
     use pgx::prelude::*;
+    use pgx::bgworkers::*;
+    use pgx::{FromDatum, IntoDatum, PgOid};
+    use crate::background_worker;
 
     #[pg_test]
     fn test_query_exec() {
-        assert!(query::query_exec(query::UPTIME_QUERY).is_some());
+        assert!(query_exec(UPTIME_QUERY).is_some());
     }
 
     #[pg_test]
     fn test_handle_query() {
-        assert!(query::handle_query(query::UPTIME_QUERY).is_some());
+        // let arg = unsafe { i32::from_datum(arg, false) }.expect("invalid arg");
+    
+        let worker = BackgroundWorkerBuilder::new("dynamic_bgworker")
+            .set_library("prometheus_exporter")
+            .set_function("background_worker")
+            .enable_spi_access()
+            .set_notify_pid(unsafe { pg_sys::MyProcPid })
+            .load_dynamic();
+        let pid = worker.wait_for_startup().expect("no PID from the worker");
+        assert!(pid > 0);
+        assert!(handle_query(UPTIME_QUERY).is_some());
     }
 }
+
+
+// ps aux | grep -i Prometheus-Exporter | grep -v 'grep' |  awk '{print $2}'
+// Neon is apache 2.0 licensed
+// Supabase
