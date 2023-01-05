@@ -2,10 +2,12 @@ use pgx::prelude::*;
 use pgx::warning;
 use pgx::SpiTupleTable;
 
+use pgmq::query;
+
 pgx::pg_module_magic!();
 
-const VT_DEFAULT: i64 = 30;
-const DELAY_DEFAULT: i64 = 0;
+const VT_DEFAULT: u32 = 30;
+const DELAY_DEFAULT: u32 = 0;
 
 // read many messages at once, if they exist
 #[pg_extern]
@@ -27,27 +29,24 @@ fn pgmq_set_vt(_queue_name: &str, _msg_id: &str, _vt: i64) {
 
 #[pg_extern]
 fn pgmq_create(queue_name: &str) -> bool {
+    let create_table = query::create(&queue_name);
+    let index = query::create_index(&queue_name);
     Spi::run(&format!(
         "
-        CREATE TABLE IF NOT EXISTS pgmq_config (
-            queue_name VARCHAR NOT NULL,
-            vt_default INT DEFAULT {VT_DEFAULT},
-            delay_default INT DEFAULT {DELAY_DEFAULT},
-            created TIMESTAMP DEFAULT current_timestamp
-        );
+        {create_table}
 
-        CREATE TABLE IF NOT EXISTS {name} (
+        {index}
+
+        CREATE TABLE IF NOT EXISTS {queue_name} (
             msg_id BIGSERIAL,
             vt TIMESTAMP,
             message JSON
         );
 
         INSERT INTO pgmq_config (queue_name)
-        VALUES ('{name}');
-        ",
-        name = queue_name
+        VALUES ('{queue_name}');
+        "
     ));
-    // TODO: create index on vt
     true
 }
 
@@ -55,34 +54,14 @@ fn pgmq_create(queue_name: &str) -> bool {
 #[pg_extern]
 fn pgmq_enqueue(queue_name: &str, message: pgx::Json) -> Option<i64> {
     // TODO: impl delay on top of vt
-    Spi::get_one(&format!(
-        "INSERT INTO {queue_name} (vt, message)
-            VALUES (now() at time zone 'utc', '{message}'::json)
-            RETURNING msg_id;",
-        queue_name = queue_name,
-        message = message.0,
-    ))
+    Spi::get_one(&query::enqueue(&queue_name, &message.0))
 }
 
 // check message out of the queue using default timeout
 #[pg_extern]
 fn pgmq_read(queue_name: &str) -> Option<pgx::Json> {
-    let (msg_id, vt, message) = Spi::get_three::<i64, pgx::Timestamp, pgx::Json>(&format!(
-        "
-    WITH cte AS
-        (
-            SELECT msg_id, vt, message
-            FROM {queue_name}
-            WHERE vt <= now() at time zone 'utc'
-            LIMIT 1
-            FOR UPDATE SKIP LOCKED
-        )
-    UPDATE {queue_name}
-    SET vt = (now() at time zone 'utc' + interval '{VT_DEFAULT} seconds')
-    WHERE msg_id = (select msg_id from cte)
-    RETURNING *;
-    "
-    ));
+    let (msg_id, vt, message) =
+        Spi::get_three::<i64, pgx::Timestamp, pgx::Json>(&query::read(queue_name, &VT_DEFAULT));
     match msg_id {
         Some(msg_id) => Some(pgx::Json(serde_json::json!({
             "msg_id": msg_id,
@@ -98,17 +77,8 @@ fn pgmq_delete(queue_name: &str, msg_id: i64) -> bool {
     let mut num_deleted = 0;
 
     Spi::connect(|client| {
-        let tup_table: SpiTupleTable = client.select(
-            &format!(
-                "
-                DELETE
-                FROM {queue_name}
-                WHERE msg_id = '{msg_id}';
-            "
-            ),
-            None,
-            None,
-        );
+        let tup_table: SpiTupleTable =
+            client.select(&query::delete(&queue_name, &msg_id), None, None);
         num_deleted = tup_table.len();
         Ok(Some(()))
     });
