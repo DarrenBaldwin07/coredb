@@ -1,5 +1,5 @@
 [package]
-name = "pgmq"
+name = "pg_pgmq"
 version = "0.0.0"
 edition = "2021"
 
@@ -16,6 +16,7 @@ pg15 = ["pgx/pg15", "pgx-tests/pg15" ]
 pg_test = []
 
 [dependencies]
+pgmq = { path = "../../crates/pgmq"}
 pgx = "=0.6.1"
 serde = "1.0.152"
 serde_json = "1.0.91"
