@@ -9,7 +9,7 @@ use sqlx::Row;
 use sqlx::error::Error;
 use sqlx::postgres::PgRow;
 
-mod query;
+pub mod query;
 
 #[derive(Debug)]
 pub struct Message {
